@@ -1,0 +1,8 @@
+google-genai
+pandas
+scipy
+scikit-learn
+python-dotenv
+fastapi
+uvicorn
+python-multipart

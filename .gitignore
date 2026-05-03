@@ -1,3 +1,5 @@
 *.env
 *.csv
 *.venv
+*/node_modules
+*/dist

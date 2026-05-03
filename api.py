@@ -1,129 +1,218 @@
 import os
+import time
 import pandas as pd
 import numpy as np
-from fastapi import FastAPI, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
 from scipy import stats
-from sklearn.preprocessing import RobustScaler, StandardScaler, MinMaxScaler
-from sklearn.cluster import DBSCAN
-from sklearn.decomposition import PCA
-from google import genai
 from dotenv import load_dotenv
 
+# Librerías de Machine Learning
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
+from sklearn.cluster import DBSCAN
+from sklearn.neighbors import NearestNeighbors
+
+# Clientes de IA
+from google import genai
+from groq import Groq
+from openai import OpenAI
+import ollama
+
+# Cargar configuración
 load_dotenv()
 
-app = FastAPI()
+# ==========================================
+# CONFIGURACIÓN GLOBALES
+# ==========================================
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "OLLAMA") # Por defecto local
 
-# Configuración CORS para que Lovable pueda llamar a tu API
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Inicialización de clientes (con manejo de errores si falta la key)
+try:
+    gemini_client = genai.Client(api_key=os.getenv("GEMINI_KEY"))
+    groq_client = Groq(api_key=os.getenv("GROQ_KEY"))
+    openai_client = OpenAI(api_key=os.getenv("OPENAI_KEY"))
+except Exception as e:
+    print(f"⚠️ Aviso: Alguna API Key no se cargó correctamente: {e}")
 
-# Cliente Gemini Único
-client = genai.Client(api_key=os.getenv("GEMINI_KEY"))
-
-class AgenticCore:
+class ResearchTools:
     @staticmethod
-    def process_data(df):
-        # 1. Limpieza básica
-        df = df.select_dtypes(include=[np.number]).dropna(axis=1, how='all')
-        df = df.fillna(df.median())
+    def data_agent(file_path):
+        """Fase 1: Ingesta y Limpieza Profunda Adaptativa"""
+        df = pd.read_csv(file_path)
         
-        # 2. Escalado Adaptativo
-        scaler = RobustScaler() if df.skew().abs().mean() > 1 else StandardScaler()
-        df_scaled = pd.DataFrame(scaler.fit_transform(df), columns=df.columns)
+        # Eliminar columnas 100% vacías
+        df.dropna(axis=1, how='all', inplace=True)
         
-        # 3. DBSCAN (Clustering por densidad)
-        dbscan = DBSCAN(eps=0.5, min_samples=5).fit(df_scaled)
-        df['cluster'] = dbscan.labels_
+        # Filtrar columnas numéricas
+        num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
         
-        # 4. PCA para la Galaxia Visual (Reducción a 2D)
-        pca = PCA(n_components=2)
-        coords = pca.fit_transform(df_scaled)
-        df['x'] = coords[:, 0]
-        df['y'] = coords[:, 1]
+        # Imputación de nulos y eliminación de constantes
+        for col in num_cols:
+            median_val = df[col].median()
+            if pd.isna(median_val) or df[col].nunique() <= 1:
+                df.drop(columns=[col], inplace=True)
+            else:
+                df[col] = df[col].fillna(median_val)
+
+        num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
         
-        return df, df_scaled
+        # Decisión de Escalado
+        skewness = df[num_cols].skew().abs().mean()
+        Q1, Q3 = df[num_cols].quantile(0.25), df[num_cols].quantile(0.75)
+        IQR = Q3 - Q1
+        outlier_ratio = ((df[num_cols] < (Q1 - 1.5 * IQR)) | (df[num_cols] > (Q3 + 1.5 * IQR))).sum().sum() / df[num_cols].size
+
+        if outlier_ratio > 0.05:
+            scaler = RobustScaler()
+            method = "RobustScaler (Outliers detectados)"
+        elif skewness > 1:
+            scaler = MinMaxScaler()
+            method = "MinMaxScaler (Alta asimetría)"
+        else:
+            scaler = StandardScaler()
+            method = "StandardScaler (Distribución Normal)"
+
+        df_scaled = df.copy()
+        df_scaled[num_cols] = scaler.fit_transform(df[num_cols])
+        return df, df_scaled, f"Normalización via {method} sobre {len(num_cols)} variables."
 
     @staticmethod
-    def get_strategic_insight(relations, patterns):
-        prompt = f"""
-        Actúa como Senior Lead Data Scientist. Traduce estos datos técnicos a negocio.
-        CONTEXTO: {patterns}
-        DATOS CLAVE: {relations[:3]}
-
-        RESPONDE EXACTAMENTE CON ESTA ESTRUCTURA:
-        TITULO: (Máximo 5 palabras)
-        HALLAZGO: (Máximo 4 líneas con números reales. Explica la relación principal de forma sencilla).
-        REGLA_ORO: (Exactamente 3 frases siguiendo el esquema "A mayor X, se observa Y").
-        """
+    def pattern_discovery_agent(df_scaled, df_original):
+        """Fase 2: Clustering por Densidad (DBSCAN)"""
+        num_df = df_scaled.select_dtypes(include=[np.number])
+        print(f"🧠 Agentic-IA: Analizando topología de densidad...")
         
-        response = client.models.generate_content(
-            model="gemini-2.0-flash-lite", 
-            contents=prompt
-        )
-        # Parseo simple del texto
-        text = response.text
-        lines = text.split('\n')
-        return {
-            "title": lines[0].replace("TITULO:", "").strip(),
-            "hallazgo": lines[1].replace("HALLAZGO:", "").strip(),
-            "regla_oro": [l.strip() for l in lines[2:] if "REGLA_ORO:" not in l and l.strip()]
-        }
+        # Auto-tuning de EPS (Distancia entre vecinos)
+        neigh = NearestNeighbors(n_neighbors=2)
+        nbrs = neigh.fit(num_df)
+        distances, _ = nbrs.kneighbors(num_df)
+        eps_estimado = np.percentile(distances[:, 1], 90)
+        if eps_estimado <= 0: eps_estimado = 0.5
+        
+        dbscan = DBSCAN(eps=eps_estimado, min_samples=5).fit(num_df)
+        df_original['cluster'] = dbscan.labels_
+        
+        n_clusters = len(set(dbscan.labels_)) - (1 if -1 in dbscan.labels_ else 0)
+        n_noise = list(dbscan.labels_).count(-1)
+        
+        return df_original, f"DBSCAN: {n_clusters} grupos hallados, {n_noise} puntos de ruido."
 
-@app.post("/analyze")
-async def analyze_dataset(file: UploadFile = File(...)):
-    # Leer CSV
-    df_raw = pd.read_csv(file.file)
-    
-    # Ejecutar Core
-    core = AgenticCore()
-    df_final, df_scaled = core.process_data(df_raw)
-    
-    # Validación Estadística (ANOVA para el Radar Chart)
-    significant_cols = []
-    clusters = [c for c in df_final['cluster'].unique() if c != -1]
-    
-    for col in df_scaled.columns:
-        if col in ['x', 'y', 'cluster']: continue
-        groups = [group[col].values for name, group in df_final[df_final['cluster'] != -1].groupby('cluster')]
-        if len(groups) > 1:
+    @staticmethod
+    def validation_agent(df):
+        """Fase 3: Validación Estadística y Comparación de Magnitudes"""
+        clusters_validos = [c for c in df['cluster'].unique() if c != -1]
+        if len(clusters_validos) < 2:
+            return "AVISO: No hay grupos suficientes para contrastar tendencias."
+
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        significant_relations = []
+        
+        for col in numeric_cols:
+            if col == 'cluster': continue
+            
+            # ANOVA para confirmar separación
+            groups = [group[col].values for name, group in df[df['cluster'] != -1].groupby('cluster')]
             f_stat, p_val = stats.f_oneway(*groups)
+            
             if p_val < 0.05:
-                medias = df_final.groupby('cluster')[col].mean().to_dict()
-                significant_cols.append({"variable": col, "f": f_stat, "medias": medias})
-    
-    significant_cols = sorted(significant_cols, key=lambda x: x['f'], reverse=True)
+                # Extraemos medias para que la IA vea la dirección del dato
+                medias = df[df['cluster'] != -1].groupby('cluster')[col].mean().to_dict()
+                significant_relations.append({
+                    "variable": col, 
+                    "p_value": p_val, 
+                    "impacto_f": round(f_stat, 2),
+                    "medias_por_cluster": medias
+                })
+        
+        return sorted(significant_relations, key=lambda x: x['impacto_f'], reverse=True)
 
-    # Obtener Insight de Gemini
-    res_patrones = f"Grupos: {len(clusters)}, Ruido: {list(df_final['cluster']).count(-1)}"
-    insight = core.get_strategic_insight(significant_cols, res_patrones)
+class AgenticResearcher:
+    def __init__(self, dataset_path):
+        self.dataset_path = dataset_path
+        self.tools = ResearchTools()
 
-    # Formatear datos para la Galaxia (Scatter Plot)
-    # Enviamos solo una muestra de 500 puntos para no saturar el frontend
-    galaxy_points = df_final.sample(min(500, len(df_final))).to_dict(orient="records")
+        # --- VALIDACIÓN TÉCNICA ---
+        # - Comportamiento: (Dirección de las tendencias: alcistas/bajistas).
+        # - Robustez: (Veredicto sobre si el patrón es sólido).
 
-    # Formatear datos para el Radar (Comparando el mejor cluster vs cluster 0)
-    best_cluster = significant_cols[0]['medias'] if significant_cols else {}
-    radar_data = []
-    for col in significant_cols[:4]: # Top 4 variables
-        var_name = col['variable']
-        radar_data.append({
-            "metric": var_name,
-            "target": col['medias'].get(max(clusters, key=lambda c: col['medias'].get(c, 0)), 0),
-            "baseline": col['medias'].get(0, 0)
-        })
+        # 1. MAPEO DE TENDENCIAS: Compara los valores de 'medias_por_cluster'. Explica qué variables suben o bajan entre grupos.
+        # 2. ANÁLISIS MECÁNICO: Explica la causalidad probable entre las variables con más impacto F.
+        # 3. DETECTA POSIBLES COLUMNAS DE IDS DE SUJETO O USUARIO Y EVITA QUE INFLUYAN EN LA CONCLUSIÓN
 
-    return {
-        "insight": insight,
-        "galaxy": galaxy_points,
-        "radar": radar_data,
-        "stats": res_patrones
-    }
+    def get_explanation(self, relations, res_patrones):
+        if isinstance(relations, str): return relations
+        
+        # Reducimos relaciones para no quemar tokens de la cuota
+        top_relations = relations[:5]
+
+        # 2. Limpiamos los decimales para ahorrar miles de caracteres
+        for rel in top_relations:
+            rel['p_value'] = f"{rel['p_value']:.4e}" # Formato científico corto
+            # Redondeamos las medias de los clústeres
+            if 'distribucion_medias' in rel:
+                rel['distribucion_medias'] = {k: round(v, 2) for k, v in rel['distribucion_medias'].items()}
+
+        prompt = f"""
+        Actúa como un Senior Lead Data Scientist. Analiza la arquitectura de este dataset.
+        
+        CONTEXTO CLÚSTERES: {res_patrones}
+        RELACIONES CLAVE (ANOVA + MEDIAS): {top_relations}
+
+        FORMATO DE RESPUESTA (RESPONDE SOLO CON ESTOS APARTADOS. LO ANTERIOR ES PARA QUE LO ANALICES Y LA RESPUESTA SEA MEJOR)
+        - Título: (Máximo 5 palabras sobre el patrón hallado).
+        - El Hallazgo: (Máximo 4 líneas explicando la relación principal con números. No seas técnico, explícalo de forma que se entienda fácilmente).
+        - Regla de Oro: (Explicación NO TÉCNICA de exactamente 3 frases siguiendo el esquema "A mayor X, se observa Y").
+
+        INSTRUCCIÓN CRÍTICA: En 'El Hallazgo', usa los valores de las medias para comparar los grupos (ej. 'El grupo A gasta 500€ frente a los 100€ del grupo B'). No menciones palabras como 'ANOVA', 'p-value' o 'DBSCAN' en la sección de INSIGHT ESTRATÉGICO.
+        """
+
+        try:
+            if LLM_PROVIDER == "OLLAMA":
+                res = ollama.chat(model=os.getenv("OLLAMA_MODEL", "llama3.2"), 
+                                  messages=[{'role': 'user', 'content': prompt}])
+                return res['message']['content'].strip()
+            
+            elif LLM_PROVIDER == "GROQ":
+                res = groq_client.chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    messages=[{"role": "user", "content": prompt}])
+                return res.choices[0].message.content.strip()
+
+            elif LLM_PROVIDER == "GEMINI":
+                res = gemini_client.models.generate_content(
+                    model=os.getenv("GEMINI_MODEL"), contents=prompt)
+                return res.text.strip()
+            
+            elif LLM_PROVIDER == "OPENAI":
+                res = openai_client.chat.completions.create(
+                    model=os.getenv("OPENAI_MODEL"),
+                    messages=[{"role": "user", "content": prompt}])
+                return res.choices[0].message.content.strip()
+
+        except Exception as e:
+            return f"⚠️ Error en {LLM_PROVIDER}: {str(e)[:150]}. Cambia el proveedor en el .env"
+
+    def run(self):
+        print(f"🚀 Investigando con {LLM_PROVIDER} en: {self.dataset_path}")
+        
+        # 1. Datos
+        self.df_original, self.df_scaled, res_data = self.tools.data_agent(self.dataset_path)
+        print(f"✅ {res_data}")
+
+        # 2. Patrones
+        self.df_original, res_patrones = self.tools.pattern_discovery_agent(self.df_scaled, self.df_original)
+        print(f"✅ {res_patrones}")
+
+        # 3. Validación
+        relaciones = self.tools.validation_agent(self.df_original)
+        print(f"✅ Validación estadística completada.")
+
+        # 4. Narrativa
+        narrativa = self.get_explanation(relaciones, res_patrones)
+        
+        print("\n" + "="*60)
+        print(f"RESULTADO DEL AGENTE INVESTIGADOR:\n{narrativa}")
+        print("="*60 + "\n")
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Cambia esto por el dataset que quieras probar
+    investigador = AgenticResearcher("./marketing_campaign_performance_10000.csv")
+    investigador.run()

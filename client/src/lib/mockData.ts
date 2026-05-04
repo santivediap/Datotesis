@@ -3,6 +3,7 @@ export type GalaxyPoint = {
   x: number;
   y: number;
   cluster: number;
+  size_weight: number;
   id: string;
 };
 
@@ -17,7 +18,10 @@ export type AnalysisResult = {
     x_axis_label: string;
     y_axis_label: string;
     points: GalaxyPoint[];
+    boundaries: Record<string, {x: number, y: number}[]>;
+    top_clusters: number[];
   };
+  cluster_stats: Record<string, { nombre: string; metricas: Record<string, number> }>;
   insight: {
     title: string;
     finding: string;
@@ -28,6 +32,8 @@ export type AnalysisResult = {
     rows: number;
     clusters: number;
     noise_pct: number;
+    noise_count?: number;
+    clustered_count?: number;
   };
 };
 

@@ -57,7 +57,7 @@ class ResearcherManager:
         
         # 3. Validation and Topology Extraction
         await self.emit_status("VALIDATING")
-        relaciones, topology, axes = await asyncio.to_thread(self._validate_and_extract_topology, df_original)
+        relaciones, topology, axes, cluster_stats_detail = await asyncio.to_thread(self._validate_and_extract_topology, df_original, df_scaled)
         
         # 4. Generating Narrative Insights
         await self.emit_status("GENERATING_INSIGHTS")
@@ -69,6 +69,7 @@ class ResearcherManager:
             "topology": topology,
             "axes": axes,
             "stats": cluster_stats,
+            "cluster_stats": cluster_stats_detail,
             "insight": insight
         }
         await self.websocket.send_json(final_result)
@@ -131,7 +132,7 @@ class ResearcherManager:
         }
         return df_original, stats_data
 
-    def _validate_and_extract_topology(self, df):
+    def _validate_and_extract_topology(self, df, df_scaled):
         clusters_validos = [c for c in df['cluster'].unique() if c != -1]
         numeric_cols = [c for c in df.select_dtypes(include=[np.number]).columns if c != 'cluster']
         
@@ -141,7 +142,7 @@ class ResearcherManager:
                 groups = [group[col].values for name, group in df[df['cluster'] != -1].groupby('cluster')]
                 f_stat, p_val = stats.f_oneway(*groups)
                 if p_val < 0.05:
-                    medias = df[df['cluster'] != -1].groupby('cluster')[col].mean().to_dict()
+                    medias = df.groupby('cluster')[col].mean().to_dict()
                     significant_relations.append({
                         "variable": col, 
                         "p_value": p_val, 
@@ -151,33 +152,86 @@ class ResearcherManager:
         
         significant_relations = sorted(significant_relations, key=lambda x: x['impacto_f'], reverse=True)
         
-        # Extract Topology (PCA or Strategic Cut)
-        if len(significant_relations) >= 2:
-            x_col = significant_relations[0]['variable']
-            y_col = significant_relations[1]['variable']
-            
-            axes = {"x_label": x_col, "y_label": y_col}
-            
-            x_data = df[x_col].tolist()
-            y_data = df[y_col].tolist()
+        # PCA Dimensionality Reduction
+        if len(numeric_cols) >= 2:
+            pca = PCA(n_components=2)
+            # Use scaled data for PCA (df_scaled does not have 'cluster' column as it was added to df_original after)
+            num_df_scaled = df_scaled[numeric_cols].fillna(0)
+            pca_res = pca.fit_transform(num_df_scaled)
+            x_data = pca_res[:, 0].tolist()
+            y_data = pca_res[:, 1].tolist()
         else:
-            if len(numeric_cols) >= 2:
-                pca = PCA(n_components=2)
-                pca_res = pca.fit_transform(df[numeric_cols].fillna(0))
-                x_data = pca_res[:, 0].tolist()
-                y_data = pca_res[:, 1].tolist()
-                axes = {"x_label": "PCA_1", "y_label": "PCA_2"}
-            else:
-                x_data = [0] * len(df)
-                y_data = [0] * len(df)
-                axes = {"x_label": "N/A", "y_label": "N/A"}
+            x_data = [0] * len(df)
+            y_data = [0] * len(df)
 
-        topology = []
+        axes = {"x_label": "Componente Principal 1", "y_label": "Componente Principal 2"}
+
+        # Calculate size_weight from the most significant variable
+        size_weights = [0.5] * len(df)
+        if len(significant_relations) > 0:
+            critical_var = significant_relations[0]['variable']
+            # Normalize between 0 and 1
+            vals = df[critical_var].values
+            min_val, max_val = np.nanmin(vals), np.nanmax(vals)
+            if max_val > min_val:
+                size_weights = ((vals - min_val) / (max_val - min_val)).tolist()
+
+        from collections import Counter
+        from scipy.spatial import ConvexHull
+        
+        valid_clusters = [c for c in df['cluster'].tolist() if c != -1]
+        cluster_counts = Counter(valid_clusters)
+        top_clusters = [c for c, _ in cluster_counts.most_common(5)]
+        
+        points = []
         cluster_data = df['cluster'].tolist()
-        for x, y, c in zip(x_data, y_data, cluster_data):
-            topology.append({"x": float(x), "y": float(y), "cluster": int(c)})
+        for x, y, c, w in zip(x_data, y_data, cluster_data, size_weights):
+            points.append({
+                "x": float(x), 
+                "y": float(y), 
+                "cluster": int(c),
+                "size_weight": float(w)
+            })
+
+        # Calculate Convex Hulls for valid clusters
+        cluster_boundaries = {}
+        for c in clusters_validos:
+            c_points = [(p['x'], p['y']) for p in points if p['cluster'] == c]
+            if len(c_points) >= 3:
+                try:
+                    hull = ConvexHull(c_points)
+                    boundary = [{"x": float(c_points[v][0]), "y": float(c_points[v][1])} for v in hull.vertices]
+                    cluster_boundaries[f"cluster_{int(c)}"] = boundary
+                except:
+                    pass
+
+        topology = {
+            "projection_type": "PCA",
+            "points": points,
+            "axis_labels": axes,
+            "cluster_boundaries": cluster_boundaries,
+            "top_clusters": top_clusters
+        }
+
+        # Build detailed cluster stats for tooltips
+        cluster_stats_detail = {}
+        all_clusters = df['cluster'].unique()
+        
+        for c in all_clusters:
+            c_int = int(c)
+            c_name = "Ruido" if c_int == -1 else f"Clúster {c_int}"
+            metrics = {}
+            for rel in significant_relations[:3]:
+                var_name = rel['variable']
+                mean_val = rel['medias_por_cluster'].get(c_int, 0)
+                metrics[var_name] = round(float(mean_val), 2)
+                
+            cluster_stats_detail[str(c_int)] = {
+                "nombre": c_name,
+                "metricas": metrics
+            }
             
-        return significant_relations, topology, axes
+        return significant_relations, topology, axes, cluster_stats_detail
 
     def _generate_narrative(self, relations, cluster_stats):
         if not gemini_client:

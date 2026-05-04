@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 # FastAPI
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 import uvicorn
 
 # Machine Learning
@@ -262,6 +264,7 @@ class ResearcherManager:
         }}
 
         Para el campo 'confidence_score': Basado en los p-values y la distribución de clústeres proporcionada, asigna un puntaje de confianza del 0 al 1 donde 1 es una certeza científica absoluta.
+        Para los campos 'golden_rule' y 'finding' no incluyas relaciones que tengan que ver con IDs de variables
         """
 
         try:
@@ -309,6 +312,27 @@ async def websocket_endpoint(websocket: WebSocket):
 def health_check():
     return {"status": "ok"}
 
+# Montar la carpeta /static para servir archivos estáticos directamente (opcional pero recomendado)
+if os.path.isdir("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/{full_path:path}")
+async def serve_frontend(full_path: str):
+    """
+    Ruta Catch-all: Captura cualquier ruta que no coincida con la API.
+    Si el archivo solicitado existe en /static (ej: assets/main.js), lo devuelve.
+    De lo contrario, devuelve el index.html para permitir el enrutamiento del frontend (React).
+    """
+    static_file_path = os.path.join("static", full_path)
+    if os.path.isfile(static_file_path):
+        return FileResponse(static_file_path)
+    
+    index_path = os.path.join("static", "index.html")
+    if os.path.isfile(index_path):
+        return FileResponse(index_path)
+        
+    return {"error": "Frontend no encontrado. Asegúrate de haber compilado el frontend y que exista la carpeta /static"}
 
 if __name__ == "__main__":
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("api:app", host="0.0.0.0", port=port, reload=True)

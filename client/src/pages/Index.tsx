@@ -32,7 +32,9 @@ const Index = () => {
     setActiveStage(0);
     setResult(null);
 
-    const ws = new WebSocket("ws://localhost:8000/ws/analyze");
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+    const ws = new WebSocket(`${protocol}//${host}/ws/analyze`);
     wsRef.current = ws;
 
     ws.onopen = () => {

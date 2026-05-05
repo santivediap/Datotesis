@@ -6,19 +6,19 @@ interface Props {
   xLabel: string;
   yLabel: string;
   stats?: { rows: number; clusters: number; noise_pct: number; noise_count?: number; clustered_count?: number };
-  boundaries?: Record<string, {x: number, y: number}[]>;
+  boundaries?: Record<string, { x: number, y: number }[]>;
   top_clusters?: number[];
   cluster_stats?: Record<string, { nombre: string; metricas: Record<string, number> }>;
 }
 
-const COLOR_PALETTE = ["#3B82F6", "#06B6D4", "#8B5CF6", "#EC4899", "#10B981"]; // Azul, Cian, Violeta, Rosa, Verde
+const COLOR_PALETTE = ["#3B82F6", "#d4d406ff", "#8B5CF6", "#EC4899", "#10B981"]; // Azul, Amarillo, Violeta, Rosa, Verde
 const COLOR_OTROS = "#4B5563";
 const COLOR_RUIDO = "#1C1C1E";
 
 const PointShape = (props: any) => {
   const { cx, cy, payload } = props;
   const color = payload.color ?? COLOR_OTROS;
-  
+
   if (payload.cluster === -1) {
     return (
       <circle
@@ -30,17 +30,17 @@ const PointShape = (props: any) => {
       />
     );
   }
-  
+
   const w = payload.size_weight ?? 0.5;
   const radius = 2 + (w * 6);
-  
+
   return (
-    <circle 
-      cx={cx} 
-      cy={cy} 
-      r={radius} 
-      fill={color} 
-      opacity={0.2} 
+    <circle
+      cx={cx}
+      cy={cy}
+      r={radius}
+      fill={color}
+      opacity={0.2}
       style={{ mixBlendMode: 'screen' }}
     />
   );
@@ -50,14 +50,14 @@ const CustomTooltip = ({ active, payload, clusterStats }: any) => {
   if (active && payload && payload.length) {
     const data = payload[0].payload;
     const clusterId = data.cluster;
-    
+
     const statsData = clusterStats?.[String(clusterId)];
     const title = statsData?.nombre || (clusterId === -1 ? "Ruido" : `Clúster ${clusterId}`);
-    
+
     return (
       <div className="rounded-md border border-border-strong bg-surface-2 p-3 shadow-[0_8px_24px_-8px_hsl(0_0%_0%_/_0.6)] text-[11px] font-mono min-w-[160px]">
         <p className="font-semibold text-foreground mb-2 border-b border-border pb-1.5">{title}</p>
-        
+
         {statsData && statsData.metricas ? (
           <div className="flex flex-col gap-1.5 mb-2">
             {Object.entries(statsData.metricas).map(([key, val]) => (
@@ -68,7 +68,7 @@ const CustomTooltip = ({ active, payload, clusterStats }: any) => {
             ))}
           </div>
         ) : null}
-        
+
         <div className="flex items-center gap-2 pt-2 border-t border-border/50 text-[9px] text-muted-foreground/60">
           <span>x:{data.x.toFixed(2)}</span>
           <span>y:{data.y.toFixed(2)}</span>
@@ -82,11 +82,11 @@ const CustomTooltip = ({ active, payload, clusterStats }: any) => {
 const BoundariesLayer = (props: any) => {
   const { xAxisMap, yAxisMap, boundaries, getColor } = props;
   if (!xAxisMap || !yAxisMap || !boundaries) return null;
-  
+
   const xAxis = Object.values(xAxisMap)[0] as any;
   const yAxis = Object.values(yAxisMap)[0] as any;
   if (!xAxis || !yAxis) return null;
-  
+
   const xScale = xAxis.scale;
   const yScale = yAxis.scale;
 
@@ -96,7 +96,7 @@ const BoundariesLayer = (props: any) => {
         const cId = parseInt(clusterKey.replace("cluster_", ""));
         const color = getColor(cId);
         const pointsStr = pts.map((p: any) => `${xScale(p.x)},${yScale(p.y)}`).join(" ");
-        
+
         return (
           <polygon
             key={clusterKey}
@@ -141,7 +141,7 @@ export default function GalaxyChart({ points, xLabel, yLabel, stats, boundaries,
     arr.push(p);
     byCluster.set(p.cluster, arr);
   });
-  
+
   const clustered = pointsWithColors.filter((p) => p.cluster !== -1);
   const noise = pointsWithColors.filter((p) => p.cluster === -1);
 
@@ -151,11 +151,11 @@ export default function GalaxyChart({ points, xLabel, yLabel, stats, boundaries,
     .slice(0, 5)
     .sort((a, b) => a - b)
     .map((c) => ({ label: `CLUSTER_${c}`, color: getColor(c) }));
-    
+
   if (byCluster.size > (top_clusters ? top_clusters.length : 5) || [...byCluster.keys()].some(c => c !== -1 && !colorMap.has(c))) {
-     if (!legendItems.find(l => l.label === "OTROS")) {
-        legendItems.push({ label: "OTROS", color: COLOR_OTROS });
-     }
+    if (!legendItems.find(l => l.label === "OTROS")) {
+      legendItems.push({ label: "OTROS", color: COLOR_OTROS });
+    }
   }
 
   return (
@@ -178,14 +178,14 @@ export default function GalaxyChart({ points, xLabel, yLabel, stats, boundaries,
             </span>
           ))}
           <span className="flex items-center gap-1.5 opacity-70">
-              <span
-                className="w-1.5 h-1.5 rounded-full"
-                style={{ background: COLOR_RUIDO, boxShadow: `0 0 6px ${COLOR_RUIDO}` }}
-              />
-              RUIDO
-            </span>
-          </div>
+            <span
+              className="w-1.5 h-1.5 rounded-full"
+              style={{ background: COLOR_RUIDO, boxShadow: `0 0 6px ${COLOR_RUIDO}` }}
+            />
+            RUIDO
+          </span>
         </div>
+      </div>
 
       <div className="relative flex-1 min-h-[440px] mt-4 rounded-md border border-border/60 bg-background/40">
         <div className="absolute top-3 left-4 font-mono text-[10px] text-muted-foreground tracking-wider z-10">
